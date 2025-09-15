@@ -11,6 +11,7 @@ A tool for gathering and presenting contributions (commits, issues, and pull req
 - Generates detailed Markdown summaries of contributions by author
 - Supports private repositories via GitHub tokens
 - Customizable filters and thresholds
+- Converts JSON data to CSV/XLSX formats for easier analysis
 
 ## Requirements
 
@@ -19,19 +20,39 @@ This project requires Python 3 and has the following dependencies:
 - `bs4` (BeautifulSoup4): For HTML parsing
 - `python-dotenv`: For managing environment variables (e.g., GitHub token)
 - `requests`: For making API calls to GitHub
+- `pandas`: For data manipulation and conversion to CSV/XLSX
+- `openpyxl`: For Excel file support
 - `tqdm`: For progress bars in the terminal
 
 ## Installation
 
-Clone this repository and install the dependencies:
+1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/gather-commits-issues-prs.git
+git clone https://github.com/furkanakkurt1335/gather-commits-issues-prs.git
 cd gather-commits-issues-prs
+```
+
+2. Set up a virtual environment (recommended):
+
+```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
+3. Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
+
+4. Add your GitHub token (optional, required for private repositories):
+
+```bash
+cp .env.example .env
+```
+
+Then edit the `.env` file and add your GitHub token.
 
 ## Usage
 
@@ -60,6 +81,51 @@ Options:
 - `-b, --branch`: Branch to analyze (default: main/default branch)
 - `-s, --since`: Only gather data since this date in YYYY-MM-DD format
 - `-u, --usernames`: Path to JSON file mapping GitHub usernames to full names (default: `github-usernames.json`)
+
+### 3. Convert JSON to CSV/XLSX
+
+After gathering data, you can convert the JSON files to CSV or XLSX format for easier analysis:
+
+```bash
+python json_to_csv_converter.py [options]
+```
+
+Options:
+- `--input` or `-i`: Input directory containing JSON files (default: ./commits-issues-prs)
+- `--output` or `-o`: Output directory for CSV/XLSX files (default: ./csv_output or ./xlsx_output)
+- `--format` or `-f`: Output format, either 'csv' or 'xlsx' (default: xlsx)
+- `--file`: Process a specific file instead of all files in the directory
+
+Examples:
+
+```bash
+# Convert all JSON files to XLSX format
+python json_to_csv_converter.py
+
+# Convert all JSON files to CSV format
+python json_to_csv_converter.py --format csv
+
+# Convert a specific JSON file
+python json_to_csv_converter.py --file commits-issues-prs/repo-name.json
+```
+
+### 4. Combine Data Files
+
+To combine all individual CSV or XLSX files into consolidated files:
+
+```bash
+python combine_files.py [options]
+```
+
+Options:
+- `--csv-input`: Input directory containing CSV files (default: ./csv_output)
+- `--csv-output`: Output directory for consolidated CSV files (default: ./consolidated_csv)
+- `--xlsx-input`: Input directory containing XLSX files (default: ./xlsx_output)
+- `--xlsx-output`: Output directory for consolidated XLSX file (default: ./consolidated_xlsx)
+
+This will create:
+- CSV files: `all_commits.csv`, `all_issues.csv`, `all_prs.csv` in the `consolidated_csv` directory
+- XLSX file: `all_repositories.xlsx` with three sheets in the `consolidated_xlsx` directory
 
 ### GitHub Authentication
 
@@ -137,7 +203,9 @@ python gather.py -r custom-repos.json -o output-data
 python gather.py -r repos.json -u github-usernames.json
 ```
 
-## Output Format
+## Output Formats
+
+### JSON Format
 
 The gathered data is saved as JSON files with the following structure:
 
@@ -146,6 +214,23 @@ The gathered data is saved as JSON files with the following structure:
 - Pull Requests: same as issues plus commit information
 
 When GitHub username mappings are provided, the output includes both the GitHub username and the full name for each contributor, making the data more readable and easier to identify contributors.
+
+### CSV Format
+
+When using CSV output, three files are created for each repository:
+- `{repo_name}_commits.csv`: Contains all commit data
+- `{repo_name}_issues.csv`: Contains all issues data
+- `{repo_name}_prs.csv`: Contains all pull requests data
+
+The consolidated CSV files combine data from all repositories with an additional `repo` column.
+
+### XLSX Format
+
+When using XLSX output:
+- Individual repository files have three sheets: Commits, Issues, and Pull Requests
+- The consolidated file (`all_repositories.xlsx`) has three sheets that combine data from all repositories
+
+For more details on the JSON to CSV/XLSX conversion, see [CONVERTER_README.md](CONVERTER_README.md).
 
 ## License
 
