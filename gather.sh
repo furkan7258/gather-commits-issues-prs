@@ -9,12 +9,14 @@ EXTRA_ARGS=()
 
 usage() {
   cat <<USAGE
-Usage: $0 <start|run|resume|stop|status|logs|rebuild> [extra gather.py args]
+Usage: $0 <start|run|resume|pause|unpause|stop|status|logs|rebuild> [extra gather.py args]
 
 Commands:
   start    Run in background (-d) with name ${CONTAINER_NAME}. Pass extra args to gather.py.
   run      Run in foreground (attached). Pass extra args to gather.py.
   resume   Start previously stopped/background container by name ${CONTAINER_NAME}.
+  pause    Pause the running container ${CONTAINER_NAME}.
+  unpause  Unpause a paused container ${CONTAINER_NAME}.
   stop     Stop and remove the background container ${CONTAINER_NAME}.
   status   Show container status for ${CONTAINER_NAME}.
   logs     Show logs for ${CONTAINER_NAME}. Use: $0 logs -f
@@ -76,6 +78,24 @@ cmd_resume() {
   echo "Resumed ${CONTAINER_NAME}. View logs: $0 logs -f"
 }
 
+cmd_pause() {
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+    echo "Container ${CONTAINER_NAME} does not exist. Use '$0 start' to create it." >&2
+    exit 1
+  fi
+  docker pause "${CONTAINER_NAME}"
+  echo "Paused ${CONTAINER_NAME}."
+}
+
+cmd_unpause() {
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+    echo "Container ${CONTAINER_NAME} does not exist. Use '$0 start' to create it." >&2
+    exit 1
+  fi
+  docker unpause "${CONTAINER_NAME}"
+  echo "Unpaused ${CONTAINER_NAME}."
+}
+
 cmd_stop() {
   if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
     docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -105,12 +125,14 @@ main() {
   local cmd="$1"; shift || true
   EXTRA_ARGS=($@)
   case "${cmd}" in
-    start)  cmd_start;;
-    run)    cmd_run;;
-    resume) cmd_resume;;
-    stop)   cmd_stop;;
-    status) cmd_status;;
-    logs)   cmd_logs "$@";;
+    start)   cmd_start;;
+    run)     cmd_run;;
+    resume)  cmd_resume;;
+    pause)   cmd_pause;;
+    unpause) cmd_unpause;;
+    stop)    cmd_stop;;
+    status)  cmd_status;;
+    logs)    cmd_logs "$@";;
     rebuild) cmd_rebuild;;
     -h|--help|help) usage;;
     *) echo "Unknown command: ${cmd}" >&2; usage; exit 1;;
