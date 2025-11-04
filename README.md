@@ -14,82 +14,108 @@ A tool for gathering and presenting contributions (commits, issues, and pull req
 
 ## Requirements
 
-This project requires Python 3 and has the following dependencies:
+- Docker (recommended way to run)
+- Optionally, Python 3 if you want to run locally without Docker
 
-- `bs4` (BeautifulSoup4): For HTML parsing
-- `python-dotenv`: For managing environment variables (e.g., GitHub token)
-- `requests`: For making API calls to GitHub
-- `tqdm`: For progress bars in the terminal
+## Installation (Docker)
 
-## Installation
-
-Clone this repository and install the dependencies:
+Clone and build the Docker image:
 
 ```bash
 git clone https://github.com/yourusername/gather-commits-issues-prs.git
 cd gather-commits-issues-prs
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker build -t gather-cip .
 ```
 
 ## Usage
 
-### 1. Configure Repositories
+### 1. Configure Repositories (repos.json)
 
-Create or edit `repos.json` with the repositories you want to analyze:
+Supported formats:
 
+- Flat list (strings)
 ```json
 [
-  "username/repository",
-  "organization/repository"
+  "owner/repo1",
+  "owner/repo2"
 ]
 ```
 
-### 2. Gather Data
-
-Run the gather script to collect data from the specified repositories:
-
-```bash
-python gather.py
+- Flat list (objects with optional branch override)
+```json
+[
+  { "repo": "owner/repo1", "branch": "dev" },
+  { "repo": "owner/repo2" }
+]
 ```
 
-Options:
-- `-r, --repos`: Path to JSON file listing repositories (default: `repos.json`)
-- `-o, --output`: Directory for output data (default: `commits-issues-prs`)
-- `-b, --branch`: Branch to analyze (default: main/default branch)
-- `-s, --since`: Only gather data since this date in YYYY-MM-DD format
-- `-u, --usernames`: Path to JSON file mapping GitHub usernames to full names (default: `github-usernames.json`)
+- Organization-grouped
+```json
+{
+  "orgs": {
+    "owner": [
+      { "repo": "repo1", "branch": "dev" },
+      "repo2"
+    ]
+  }
+}
+```
+
+### 2. Gather Data (Docker)
+
+Recommended run command (mount current folder as /data):
+
+```bash
+docker run --rm \
+  -v $(pwd):/data \
+  --env-file ./.env \
+  -e NON_INTERACTIVE=1 \
+  gather-cip
+```
+
+Common flags (append to the command):
+- `-r /data/repos.json` path to repos config (default baked in)
+- `-d /data/dates.json` optional milestone/cutoff dates (default baked in)
+- `-u /data/github-usernames.json` optional username→full name map (default baked in)
+- `-o /data/commits-issues-prs` output directory (default baked in)
+- `--since YYYY-MM-DD` overrides the not-before date
+- `--branch <name>` global branch (per-repo `branch` in repos.json overrides this)
+- `--only-issues` or `--only-commits` or `--only-prs` to limit categories
 
 ### GitHub Authentication
 
-For private repositories, you'll need a GitHub token stored in a `.env` file:
+Create a `.env` file alongside your `repos.json` with:
 
-1. Create a file named `.env` in the root directory of the project
-2. Add your GitHub token in the following format:
+```bash
+GITHUB_TOKEN=your_personal_access_token_here
+```
 
-    ```bash
-    GITHUB_TOKEN=your_personal_access_token_here
-    ```
-
-3. If you don't have a `.env` file, the script will prompt you to enter a token if needed
-4. The token will be automatically saved to the `.env` file for future use
-
-The `.env` file is included in `.gitignore` to prevent accidentally committing your token.
+Pass it to Docker with `--env-file ./.env` (as shown above). For public repos you can omit it but you may hit rate limits.
 
 ### GitHub Username Mapping
 
-To map GitHub usernames to full names, the tool supports CSV data import:
+To map GitHub usernames to full names, convert your CSV to JSON using the included script.
 
-1. Use the included `csv_to_usernames_json.py` script to convert CSV data to JSON:
+- Run with Docker (recommended):
 
-   ```bash
-   python csv_to_usernames_json.py path/to/student_data.csv -o github-usernames.json
-   ```
+  ```bash
+  docker run --rm \
+    --user $(id -u):$(id -g) \
+    -v $(pwd):/data \
+    --entrypoint python \
+    gather-cip csv_to_usernames_json.py /data/path/to/student_data.csv -o /data/github-usernames.json
+  ```
 
-2. The CSV should have columns for `First name`, `Last name`, and `GitHub username`
-3. This creates a JSON file mapping GitHub usernames to full names
-4. `gather.py` will use this mapping to include full names alongside GitHub usernames in the output data
+  Then pass `-u /data/github-usernames.json` to the main gather run.
+
+- Optional: run locally without Docker
+
+  ```bash
+  python csv_to_usernames_json.py path/to/student_data.csv -o github-usernames.json
+  ```
+
+CSV columns expected (case-insensitive): `First name`, `Last name`, `GitHub username`.
+This creates a JSON file mapping GitHub usernames to full names. `gather.py` will use this mapping to include full names alongside GitHub usernames in the output data.
 
 The resulting JSON structure looks like this:
 
@@ -125,27 +151,29 @@ This script will:
 
 ## Examples
 
-### Gathering data for a specific repository
-
+- Gather only issues using your current folder as /data:
 ```bash
-python gather.py -r custom-repos.json -o output-data
+docker run --rm -v $(pwd):/data --env-file ./.env -e NON_INTERACTIVE=1 gather-cip --only-issues
 ```
 
-### Gathering data with username mappings
-
+- Gather with a custom output directory:
 ```bash
-python gather.py -r repos.json -u github-usernames.json
+docker run --rm -v $(pwd):/data --env-file ./.env -e NON_INTERACTIVE=1 gather-cip -o /data/out --only-prs
 ```
 
 ## Output Format
 
-The gathered data is saved as JSON files with the following structure:
+Outputs under your chosen output directory (default `./commits-issues-prs` when mounting `-v $(pwd):/data`):
 
-- Commits: author (with full name if available), message, date, link, and statistics (files changed, lines modified)
-- Issues: author (with full name if available), title, description, labels, assignees, comments, and state
-- Pull Requests: same as issues plus commit information
+- JSON per repo: `commits-issues-prs/<owner-repo>.json`
+- Per-user CSVs per repo:
+  - `commits-issues-prs/<owner-repo>/commits/<username>.csv`
+  - `commits-issues-prs/<owner-repo>/issues/<username>.csv`
+  - `commits-issues-prs/<owner-repo>/prs/<username>.csv`
 
-When GitHub username mappings are provided, the output includes both the GitHub username and the full name for each contributor, making the data more readable and easier to identify contributors.
+When GitHub username mappings are provided, the output includes both the GitHub username and the full name for each contributor.
+
+Tip: on Linux, to ensure files are owned by your user, run the container with `--user $(id -u):$(id -g)`. If you previously created files as root, fix with `sudo chown -R $(id -u):$(id -g) commits-issues-prs`.
 
 ## License
 

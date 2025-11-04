@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filepath: /Users/furkan1049/repos/furkanakkurt1335/gather-commits-issues-prs/gather.py
-import requests, os, json, argparse, re, time, logging, sys
+import requests, os, json, argparse, re, time, logging, sys, csv, tomllib
 from pathlib import Path
 from datetime import datetime, timedelta
 from tqdm import tqdm
@@ -10,13 +10,18 @@ from dotenv import load_dotenv
 def get_args():
     parser = argparse.ArgumentParser(description='Gather commits and issues from GitHub repositories')
     parser.add_argument('-r', '--repos', help='Path to the JSON file with the repositories', type=str, default='repos.json')
-    parser.add_argument('-d', '--dates', help='Path to the JSON file with the milestone dates', type=str, default=None)
+    parser.add_argument('-d', '--dates', help='Path to the JSON file with the milestone dates (deprecated; prefer --config TOML)', type=str, default=None)
+    parser.add_argument('-c', '--config', help='Path to the TOML config file (preferred). Default: config.toml if exists', type=str, default=None)
     parser.add_argument('-o', '--output', help='Path to the output directory', type=str, default='commits-issues-prs')
     parser.add_argument('-b', '--branch', help='Branch to gather data from', type=str)
     parser.add_argument('-s', '--since', help='Only gather data since this date (YYYY-MM-DD)', type=str)
     parser.add_argument('-u', '--usernames', help='Path to the JSON file mapping GitHub usernames to full names', type=str, default='github-usernames.json')
     parser.add_argument('-v', '--verbose', help='Verbose output (INFO level)', action='store_true')
     parser.add_argument('--debug', help='Debug output (DEBUG level)', action='store_true')
+    # Category selection
+    parser.add_argument('--only-commits', help='Gather only commits', action='store_true')
+    parser.add_argument('--only-issues', help='Gather only issues', action='store_true')
+    parser.add_argument('--only-prs', help='Gather only pull requests', action='store_true')
     return parser.parse_args()
 
 def get_diff(url, headers, retry_count=3):
@@ -107,6 +112,102 @@ def load_date_config(dates_file=None, since_date=None):
 
     return not_before_d, formatted_ms_dates
 
+def load_date_config_toml(config_file=None, since_date=None):
+    """Load date configuration from a TOML file. Expected structure:
+    [dates.not_before_date]
+    year=2025
+    month=2
+    day=10
+    hour=0
+    minute=0
+    second=0
+
+    [[dates.milestone_dates]]
+    year=2025
+    month=5
+    day=15
+    hour=9
+    minute=0
+    second=0
+    """
+    # Defaults
+    default_not_before_date = {'year': 2025, 'month': 2, 'day': 10, 'hour': 0, 'minute': 0, 'second': 0}
+    default_ms_dates = [
+        {'year': 2025, 'month': 5, 'day': 15, 'hour': 9, 'minute': 0, 'second': 0}
+    ]
+
+    not_before_date = default_not_before_date
+    ms_dates = default_ms_dates
+
+    path = Path(config_file) if config_file else Path('config.toml')
+    if path.exists():
+        try:
+            with path.open('rb') as f:
+                cfg = tomllib.load(f)
+            dates = cfg.get('dates', {})
+            nb = dates.get('not_before_date') or dates.get('not_before')
+            if isinstance(nb, dict):
+                not_before_date = {
+                    'year': int(nb.get('year', default_not_before_date['year'])),
+                    'month': int(nb.get('month', default_not_before_date['month'])),
+                    'day': int(nb.get('day', default_not_before_date['day'])),
+                    'hour': int(nb.get('hour', default_not_before_date['hour'])),
+                    'minute': int(nb.get('minute', default_not_before_date['minute'])),
+                    'second': int(nb.get('second', default_not_before_date['second']))
+                }
+            ms = dates.get('milestone_dates') or dates.get('milestones') or []
+            if isinstance(ms, list) and ms:
+                ms_dates = []
+                for m in ms:
+                    if isinstance(m, dict):
+                        ms_dates.append({
+                            'year': int(m.get('year', default_ms_dates[0]['year'])),
+                            'month': int(m.get('month', default_ms_dates[0]['month'])),
+                            'day': int(m.get('day', default_ms_dates[0]['day'])),
+                            'hour': int(m.get('hour', default_ms_dates[0]['hour'])),
+                            'minute': int(m.get('minute', default_ms_dates[0]['minute'])),
+                            'second': int(m.get('second', default_ms_dates[0]['second']))
+                        })
+            logging.info(f"Loaded date config from TOML: {path}")
+        except Exception as e:
+            logging.warning(f"Failed to read TOML config at {path}: {e}. Falling back to defaults.")
+
+    # Override with --since
+    if since_date:
+        try:
+            date_parts = since_date.split('-')
+            not_before_date = {
+                'year': int(date_parts[0]),
+                'month': int(date_parts[1]),
+                'day': int(date_parts[2]),
+                'hour': 0, 'minute': 0, 'second': 0
+            }
+            logging.info(f"Using since date from command line: {since_date}")
+        except (ValueError, IndexError):
+            logging.error(f"Invalid date format: {since_date}. Using defaults from TOML or built-in.")
+
+    # Format strings
+    not_before_d = {
+        'year': f'{not_before_date["year"]:04d}',
+        'month': f'{not_before_date["month"]:02d}',
+        'day': f'{not_before_date["day"]:02d}',
+        'hour': f'{not_before_date["hour"]:02d}',
+        'minute': f'{not_before_date["minute"]:02d}',
+        'second': f'{not_before_date["second"]:02d}'
+    }
+    formatted_ms_dates = []
+    for date in ms_dates:
+        formatted = {
+            'year': f'{date["year"]:04d}',
+            'month': f'{date["month"]:02d}',
+            'day': f'{date["day"]:02d}',
+            'hour': f'{date["hour"]:02d}',
+            'minute': f'{date["minute"]:02d}',
+            'second': f'{date["second"]:02d}'
+        }
+        formatted_ms_dates.append(formatted)
+    return not_before_d, formatted_ms_dates
+
 def get_full_name(username, username_mappings):
     """Get full name from GitHub username if available"""
     return username_mappings.get(username, username)
@@ -123,19 +224,46 @@ def setup_logger(args):
     # Create formatters
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-    # Ensure log directory exists
-    log_path = Path('gather.log').resolve()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Choose a writable log path
+    env_log_path = os.getenv('LOG_PATH')
+    log_path = None
+    if env_log_path:
+        # Allow special files like /dev/stdout
+        if env_log_path.startswith('/dev/'):
+            log_path = Path(env_log_path)
+        else:
+            log_path = Path(env_log_path)
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logging.getLogger().warning(f"Cannot create log directory {log_path.parent}: {e}. File logging disabled.")
+                log_path = None
+    else:
+        # default to output directory to ensure host-writable when mounted
+        out_dir = Path(getattr(args, 'output', 'commits-issues-prs'))
+        candidate = out_dir / 'gather.log'
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            log_path = candidate
+        except Exception as e:
+            logging.getLogger().warning(f"Cannot create default log directory {candidate.parent}: {e}. File logging disabled.")
+            log_path = None
 
     # File handler with absolute path
-    file_handler = logging.FileHandler(str(log_path), mode='w', encoding='utf-8')  # 'w' mode to start fresh each run
-    if args.debug:
-        file_handler.setLevel(logging.DEBUG)
-    elif args.verbose:
-        file_handler.setLevel(logging.INFO)
-    else:
-        file_handler.setLevel(logging.WARNING)
-    file_handler.setFormatter(formatter)
+    file_handler = None
+    try:
+        if log_path is None:
+            raise RuntimeError('No writable log path')
+        file_handler = logging.FileHandler(str(log_path), mode='w', encoding='utf-8')
+        if args.debug:
+            file_handler.setLevel(logging.DEBUG)
+        elif args.verbose:
+            file_handler.setLevel(logging.INFO)
+        else:
+            file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(formatter)
+    except Exception as e:
+        logging.getLogger().warning(f"File logging disabled: {e}")
 
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)  # Explicitly use stdout
@@ -148,7 +276,8 @@ def setup_logger(args):
     console_handler.setFormatter(formatter)
 
     # Add handlers to logger
-    logger.addHandler(file_handler)
+    if file_handler:
+        logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
     # Configure root logger as well
@@ -156,7 +285,8 @@ def setup_logger(args):
     root.setLevel(logging.DEBUG)
     for handler in root.handlers[:]:
         root.removeHandler(handler)
-    root.addHandler(file_handler)
+    if file_handler:
+        root.addHandler(file_handler)
     root.addHandler(console_handler)
 
     # Disable propagation to avoid duplicate logs
@@ -179,16 +309,14 @@ def setup_github_auth(_):
     load_dotenv()
     token = os.getenv('GITHUB_TOKEN')
 
-    # If token not found, prompt user
-    if not token:
+    # If token not found, optionally prompt unless NON_INTERACTIVE is set
+    if not token and os.getenv('NON_INTERACTIVE', '0') != '1':
         token_needed = input('Do you need to access private repositories? (y/N): ')
         if token_needed.lower() == 'y':
             token = input('Enter your GitHub token: ')
-            # Save token to .env file
             with env_path.open('w') as env_file:
                 env_file.write(f'GITHUB_TOKEN={token}\n')
             logging.info("Saved token to .env file")
-            # Reload environment variables
             load_dotenv(override=True)
 
     if token:
@@ -199,7 +327,7 @@ def setup_github_auth(_):
 
     return headers
 
-def process_repos(repo_list, headers, args, not_before_d, ms_dates_formatted, username_mappings={}):
+def process_repos(repo_entries, headers, args, not_before_d, ms_dates_formatted, username_mappings={}):
     """Process each repository to gather commits, issues, and PRs"""
     data_path = Path(args.output)
     data_path.mkdir(exist_ok=True)
@@ -220,8 +348,10 @@ def process_repos(repo_list, headers, args, not_before_d, ms_dates_formatted, us
     ) for date in ms_dates_formatted]
     logging.info(f"Milestone dates: {', '.join(ms.strftime('%Y-%m-%d %H:%M:%S') for ms in ms_dates)}")
 
-    for repo_tuple in tqdm(repo_list, desc="Processing repositories"):
-        logging.info(f'Gathering data for {repo_tuple}')
+    for entry in tqdm(repo_entries, desc="Processing repositories"):
+        repo_tuple = entry['repo']
+        branch_override = entry.get('branch')
+        logging.info(f'Gathering data for {repo_tuple}' + (f" on branch {branch_override}" if branch_override else ""))
         user_t, repo_t = repo_tuple.split('/')
         ms_l = [{'date': ms_date.strftime('%Y-%m-%d %H:%M:%S'), 'commits': {}, 'issues': {}, 'prs': {}} for ms_date in ms_dates]
         repo_url = f'https://api.github.com/repos/{user_t}/{repo_t}'
@@ -238,27 +368,43 @@ def process_repos(repo_list, headers, args, not_before_d, ms_dates_formatted, us
         repo_path = data_path / f'{user_t}-{repo_t}.json'
         prev_diffs = {}
 
-        # Gather commits
-        gather_commits(user_t, repo_t, headers, args, repo_path, not_before_date, ms_dates, ms_l,
-                      coauthor_pattern, prev_diffs, username_mappings)
+        # Determine which categories to gather based on flags
+        only_commits = args.only_commits
+        only_issues = args.only_issues
+        only_prs = args.only_prs
+        gather_commits_flag = (only_commits and not (only_issues or only_prs)) or (not only_commits and not only_issues and not only_prs) or (only_commits)
+        gather_issues_flag = (only_issues and not only_commits) or (not only_commits and not only_issues and not only_prs) or (only_issues)
+        gather_prs_flag = (only_prs and not only_commits) or (not only_commits and not only_issues and not only_prs) or (only_prs)
+
+        # Gather commits if enabled
+        if gather_commits_flag:
+            gather_commits(user_t, repo_t, headers, args, repo_path, not_before_date, ms_dates, ms_l,
+                          coauthor_pattern, prev_diffs, username_mappings, branch_override=branch_override)
 
         # Gather issues and PRs
-        gather_issues_and_prs(user_t, repo_t, headers, repo_path, not_before_date, ms_dates, ms_l, prev_diffs, username_mappings)
+        if gather_issues_flag or gather_prs_flag:
+            gather_issues_and_prs(user_t, repo_t, headers, repo_path, not_before_date, ms_dates, ms_l, prev_diffs, username_mappings,
+                                  include_issues=gather_issues_flag, include_prs=gather_prs_flag)
 
         # Sort and finalize data
         finalize_repo_data(ms_l, ms_dates, repo_path)
+        write_per_user_csvs(ms_l, data_path, f'{user_t}-{repo_t}',
+                            write_commits=gather_commits_flag,
+                            write_issues=gather_issues_flag,
+                            write_prs=gather_prs_flag)
         logging.info(f'✓ Finished gathering all data for {repo_tuple}')
 
 def gather_commits(user_t, repo_t, headers, args, repo_path, not_before_date, ms_dates, ms_l,
-                  coauthor_pattern, prev_diffs, username_mappings={}):
+                  coauthor_pattern, prev_diffs, username_mappings={}, branch_override=None):
     """Gather commits for a repository"""
     logging.info(f'  Gathering commits for {user_t}/{repo_t}...')
     page_n = 1
 
-    with tqdm(desc="  Fetching commits", unit="page") as progress:
+    with tqdm(desc=f"  {user_t}/{repo_t} - commits", unit="page") as progress:
         while True:
-            if args.branch:
-                commits_url = f'https://api.github.com/repos/{user_t}/{repo_t}/commits?sha={args.branch}&page={page_n}'
+            effective_branch = branch_override or args.branch
+            if effective_branch:
+                commits_url = f'https://api.github.com/repos/{user_t}/{repo_t}/commits?sha={effective_branch}&page={page_n}'
             else:
                 commits_url = f'https://api.github.com/repos/{user_t}/{repo_t}/commits?page={page_n}'
 
@@ -355,12 +501,12 @@ def gather_commits(user_t, repo_t, headers, args, repo_path, not_before_date, ms
             page_n += 1
             logging.debug(f"Moving to commits page {page_n}")
 
-def gather_issues_and_prs(user_t, repo_t, headers, repo_path, not_before_date, ms_dates, ms_l, prev_diffs, username_mappings={}):
+def gather_issues_and_prs(user_t, repo_t, headers, repo_path, not_before_date, ms_dates, ms_l, prev_diffs, username_mappings={}, include_issues=True, include_prs=True):
     """Gather issues and PRs for a repository"""
     logging.info(f'  Gathering issues and PRs for {user_t}/{repo_t}...')
     page_n = 1
 
-    with tqdm(desc="  Fetching issues/PRs", unit="page") as progress:
+    with tqdm(desc=f"  {user_t}/{repo_t} - issues/PRs", unit="page") as progress:
         while True:
             issue_url = f'https://api.github.com/repos/{user_t}/{repo_t}/issues?state=all&page={page_n}'
 
@@ -383,6 +529,9 @@ def gather_issues_and_prs(user_t, repo_t, headers, repo_path, not_before_date, m
                 try:
                     is_pr = 'pull_request' in issue
                     key_t = 'prs' if is_pr else 'issues'
+                    # Skip unwanted categories
+                    if (is_pr and not include_prs) or ((not is_pr) and not include_issues):
+                        continue
                     date_t = datetime.fromisoformat(issue['created_at'].replace('Z', '+00:00'))
 
                     if date_t < not_before_date:
@@ -528,6 +677,90 @@ def finalize_repo_data(ms_l, ms_dates, repo_path):
     with repo_path.open('w') as f:
         json.dump(ms_l, f, ensure_ascii=False, indent=4)
 
+def write_per_user_csvs(ms_l, output_base_path, repo_slug, write_commits=True, write_issues=True, write_prs=True):
+    logging.info(f"Writing per-user CSVs for {repo_slug}")
+    repo_dir = output_base_path / repo_slug
+    commits_dir = repo_dir / 'commits'
+    issues_dir = repo_dir / 'issues'
+    prs_dir = repo_dir / 'prs'
+    if write_commits:
+        commits_dir.mkdir(parents=True, exist_ok=True)
+    if write_issues:
+        issues_dir.mkdir(parents=True, exist_ok=True)
+    if write_prs:
+        prs_dir.mkdir(parents=True, exist_ok=True)
+
+    def sanitize(name):
+        return re.sub(r'[^A-Za-z0-9_.-]+', '_', name)
+
+    def aggregate(category):
+        agg = {}
+        for idx, ms in enumerate(ms_l):
+            ms_date = ms['date']
+            for author, data in ms[category].items():
+                lst = data.get('list', [])
+                full_name = data.get('full_name', author)
+                if author not in agg:
+                    agg[author] = {'full_name': full_name, 'rows': []}
+                for item in lst:
+                    row = {
+                        'repository': repo_slug,
+                        'author': author,
+                        'author_full_name': full_name,
+                        'date': item.get('date', ''),
+                        'milestone_index': idx + 1,
+                        'milestone_date': ms_date,
+                        'link': item.get('link', '')
+                    }
+                    if category == 'commits':
+                        diff = item.get('diff', {})
+                        row.update({
+                            'message': item.get('message', ''),
+                            'diff_files': diff.get('files', 0),
+                            'diff_total': diff.get('total', 0)
+                        })
+                    else:
+                        row.update({
+                            'title': item.get('title', ''),
+                            'desc': item.get('desc', ''),
+                            'labels': ';'.join(item.get('labels', [])),
+                            'assignees': ';'.join(item.get('assignees', [])),
+                            'assignee_full_names': ';'.join(item.get('assignee_full_names', [])),
+                            'state': item.get('state', ''),
+                            'comments_count': len(item.get('comments', []))
+                        })
+                        if category == 'prs':
+                            diff = item.get('diff', {})
+                            row.update({
+                                'diff_files': diff.get('files', 0),
+                                'diff_total': diff.get('total', 0)
+                            })
+                    agg[author]['rows'].append(row)
+        return agg
+
+    commits_agg = aggregate('commits') if write_commits else {}
+    issues_agg = aggregate('issues') if write_issues else {}
+    prs_agg = aggregate('prs') if write_prs else {}
+
+    def write_csv(dir_path, author, rows, headers):
+        file_path = dir_path / f"{sanitize(author)}.csv"
+        with file_path.open('w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r)
+
+    commit_headers = ['repository','author','author_full_name','date','milestone_index','milestone_date','link','message','diff_files','diff_total']
+    issue_headers = ['repository','author','author_full_name','date','milestone_index','milestone_date','link','title','desc','labels','assignees','assignee_full_names','state','comments_count']
+    pr_headers = ['repository','author','author_full_name','date','milestone_index','milestone_date','link','title','desc','labels','assignees','assignee_full_names','state','comments_count','diff_files','diff_total']
+
+    for author, data in commits_agg.items():
+        write_csv(commits_dir, author, data['rows'], commit_headers)
+    for author, data in issues_agg.items():
+        write_csv(issues_dir, author, data['rows'], issue_headers)
+    for author, data in prs_agg.items():
+        write_csv(prs_dir, author, data['rows'], pr_headers)
+
 def main():
     args = get_args()
 
@@ -546,9 +779,23 @@ def main():
         # Setup authentication
         headers = setup_github_auth(None)
 
-        # Load date configuration
-        not_before_d, ms_dates_formatted = load_date_config(args.dates, args.since)
-        logging.info(f"Using not before date: {not_before_d} and milestone dates: {ms_dates_formatted}")
+        # Load date configuration (prefer TOML config)
+        use_toml = False
+        cfg_path = None
+        if args.config:
+            cfg_path = args.config
+            use_toml = True
+        else:
+            # default to config.toml if present
+            if Path('config.toml').exists():
+                cfg_path = 'config.toml'
+                use_toml = True
+        if use_toml:
+            not_before_d, ms_dates_formatted = load_date_config_toml(cfg_path, args.since)
+            logging.info(f"Using TOML config: not before date: {not_before_d} and milestone dates: {ms_dates_formatted}")
+        else:
+            not_before_d, ms_dates_formatted = load_date_config(args.dates, args.since)
+            logging.info(f"Using JSON dates config: not before date: {not_before_d} and milestone dates: {ms_dates_formatted}")
     except Exception as e:
         logging.error(f"Error during setup: {e}")
         sys.exit(1)
@@ -567,11 +814,71 @@ def main():
         return
 
     with repos_path.open() as f:
-        repo_list = json.load(f)
+        raw_repos_config = json.load(f)
 
-    if not repo_list:
-        logging.error(f'No repositories found in {args.repos}. Please add repositories in the format: ["username/repo"]')
+    if not raw_repos_config:
+        logging.error(f'No repositories found in {args.repos}. Please add repositories in the format: ["owner/repo"] or with org groups.')
         return
+
+    def normalize_repo_entries(cfg):
+        entries = []
+        # Case 1: flat list
+        if isinstance(cfg, list):
+            for item in cfg:
+                if isinstance(item, str):
+                    entries.append({'repo': item, 'branch': None})
+                elif isinstance(item, dict):
+                    full = item.get('repo') or item.get('full') or item.get('name')
+                    branch = item.get('branch')
+                    if full and '/' in full:
+                        entries.append({'repo': full, 'branch': branch})
+                    else:
+                        logging.warning(f"Skipping invalid repo entry (expecting 'owner/repo'): {item}")
+                else:
+                    logging.warning(f"Skipping unsupported repo entry type: {item}")
+            return entries
+        # Case 2: dict with org groups: { "orgs": { "org": [ ... ] } }
+        if isinstance(cfg, dict):
+            orgs = None
+            if 'orgs' in cfg and isinstance(cfg['orgs'], dict):
+                orgs = cfg['orgs']
+            elif 'organizations' in cfg and isinstance(cfg['organizations'], dict):
+                orgs = cfg['organizations']
+            if orgs is not None:
+                for owner, items in orgs.items():
+                    if not isinstance(items, list):
+                        logging.warning(f"Skipping invalid list for org {owner}: {items}")
+                        continue
+                    for item in items:
+                        if isinstance(item, str):
+                            # item is repo name without owner
+                            entries.append({'repo': f"{owner}/{item}", 'branch': None})
+                        elif isinstance(item, dict):
+                            # allow {'repo':'name' or 'owner/repo', 'branch': 'dev'}
+                            raw = item.get('repo') or item.get('name') or item.get('full')
+                            branch = item.get('branch')
+                            if raw and '/' in raw:
+                                entries.append({'repo': raw, 'branch': branch})
+                            elif raw:
+                                entries.append({'repo': f"{owner}/{raw}", 'branch': branch})
+                            else:
+                                logging.warning(f"Skipping invalid repo entry under org {owner}: {item}")
+                        else:
+                            logging.warning(f"Skipping unsupported repo entry under org {owner}: {item}")
+                return entries
+            # Fallback: if dict but not recognized, try if it directly encodes a single repo
+            full = cfg.get('repo') or cfg.get('full') or cfg.get('name')
+            if full and '/' in full:
+                entries.append({'repo': full, 'branch': cfg.get('branch')})
+                return entries
+        logging.error("Unsupported repos.json format. Please provide a flat array or an object with 'orgs'.")
+        return entries
+
+    repo_entries = normalize_repo_entries(raw_repos_config)
+    if not repo_entries:
+        logging.error('No valid repositories parsed from repos.json')
+        return
+
 
     # Load GitHub username to full name mappings if available
     username_mappings = {}
@@ -585,19 +892,24 @@ def main():
             logging.error(f"Error loading username mappings: {e}")
     else:
         logging.warning(f"Username mapping file {args.usernames} not found. Using GitHub usernames as is.")
-        # Create an example username mapping structure to help users
-        example_path = Path("github-usernames.example.json")
-        if not example_path.exists():
-            example = {
-                "github-username": "Full Name",
-                "another-username": "Another Person"
-            }
-            with example_path.open('w', encoding='utf-8') as f:
-                json.dump(example, f, ensure_ascii=False, indent=4)
-            logging.info(f"Created example mapping file at {example_path} for reference")
+        # Try to create an example username mapping in the output directory; ignore permission errors
+        try:
+            out_dir = Path(args.output)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            example_path = out_dir / "github-usernames.example.json"
+            if not example_path.exists():
+                example = {
+                    "github-username": "Full Name",
+                    "another-username": "Another Person"
+                }
+                with example_path.open('w', encoding='utf-8') as f:
+                    json.dump(example, f, ensure_ascii=False, indent=4)
+                logging.info(f"Created example mapping file at {example_path} for reference")
+        except Exception as e:
+            logging.warning(f"Could not create example username mapping file: {e}")
 
     # Process repositories
-    process_repos(repo_list, headers, args, not_before_d, ms_dates_formatted, username_mappings)
+    process_repos(repo_entries, headers, args, not_before_d, ms_dates_formatted, username_mappings)
 
     logging.info("Data gathering complete!")
 
