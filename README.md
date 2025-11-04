@@ -126,17 +126,38 @@ The resulting JSON structure looks like this:
 }
 ```
 
-For convenience, a simple script is provided that converts CSV data and gathers repository data:
+### Background runs with gather.sh
+
+A helper script is provided to run the gatherer in the background and resume later.
+
+Basic usage:
 
 ```bash
-# Convert CSV to username mappings and gather data
-./run_with_usernames.sh path/to/student_data.csv
+# Start in background (container name: gather-cip-job)
+./gather.sh start --only-issues
+
+# Follow logs
+./gather.sh logs -f
+
+# Resume a previously stopped job
+./gather.sh resume
+
+# Stop and remove the background container
+./gather.sh stop
+
+# Run attached (foreground)
+./gather.sh run --since 2025-03-01
+
+# Rebuild the Docker image
+./gather.sh rebuild
 ```
 
-This script will:
+Environment overrides:
 
-1. Convert the CSV data to GitHub username mappings
-2. Use those mappings when gathering repository data
+- `DATA_DIR`: host directory to mount at `/data` (default: current directory)
+- `ENV_FILE`: path to `.env` file (default: `./.env` if present)
+
+Output persists under your host directory (e.g., `./commits-issues-prs`), so re-running continues from prior progress when possible.
 
 #### Creating a GitHub Token
 
